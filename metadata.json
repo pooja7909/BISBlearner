@@ -1,0 +1,8 @@
+{
+  "name": "Chalkboard Studio",
+  "description": "Whole-school interactive classroom activity studio where teachers enter a topic, year group, and lesson objectives to generate and play inclusive learning activities with students.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
