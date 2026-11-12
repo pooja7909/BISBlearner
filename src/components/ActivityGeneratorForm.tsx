@@ -11,6 +11,7 @@ import {
   type SubjectArea,
   type YearGroup,
 } from '../types.ts';
+import { loadLocalSubjects, parseJsonResponse, saveLocalSubjects } from '../utils/staticStorage.ts';
 
 interface ActivityGeneratorFormProps {
   subjects: string[];
@@ -122,24 +123,44 @@ export function ActivityGeneratorForm({
     }
     setSavingSubject(true);
     setSubjectError(null);
+    const applyLocalSubject = () => {
+      const current = loadLocalSubjects();
+      const existing = current.find((s) => s.toLowerCase() === clean.toLowerCase());
+      const added = existing || clean;
+      const next = existing ? current : [...current, added];
+      saveLocalSubjects(next);
+      onSubjectAdded(next, added);
+      setSubject(added);
+      setCustomSubjectInput('');
+      setAddingSubject(false);
+    };
     try {
       const res = await fetch('/api/subjects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: clean }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Could not add subject.');
+      const parsed = await parseJsonResponse<{ subjects?: string[]; subject?: string; error?: string }>(res);
+      if (parsed.isJson) {
+        if (!parsed.ok) {
+          throw new Error(parsed.data.error || 'Could not add subject.');
+        }
+        if (Array.isArray(parsed.data.subjects)) {
+          saveLocalSubjects(parsed.data.subjects);
+          onSubjectAdded(parsed.data.subjects, parsed.data.subject || clean);
+        }
+        setSubject(parsed.data.subject || clean);
+        setCustomSubjectInput('');
+        setAddingSubject(false);
+      } else {
+        applyLocalSubject();
       }
-      if (Array.isArray(data.subjects)) {
-        onSubjectAdded(data.subjects, data.subject || clean);
-      }
-      setSubject(data.subject || clean);
-      setCustomSubjectInput('');
-      setAddingSubject(false);
     } catch (err) {
-      setSubjectError(err instanceof Error ? err.message : 'Unable to save subject.');
+      if (err instanceof TypeError) {
+        applyLocalSubject();
+      } else {
+        setSubjectError(err instanceof Error ? err.message : 'Unable to save subject.');
+      }
     } finally {
       setSavingSubject(false);
     }
@@ -194,9 +215,18 @@ export function ActivityGeneratorForm({
             questionCount: typeof questionCount === 'number' ? questionCount : undefined,
           }),
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Could not create activity from file.');
-        onGenerated(data.activities, data.primary ?? data.activities[0]);
+        const parsed = await parseJsonResponse<{
+          activities?: ClassroomActivity[];
+          primary?: ClassroomActivity;
+          error?: string;
+        }>(res);
+        if (!parsed.isJson) {
+          throw new Error('File upload generation requires the live server (npm start) with GEMINI_API_KEY configured. Ready-made School Library activities and question editing work directly here.');
+        }
+        if (!parsed.ok || !Array.isArray(parsed.data.activities)) {
+          throw new Error(parsed.data.error || 'Could not create activity from file.');
+        }
+        onGenerated(parsed.data.activities, parsed.data.primary ?? parsed.data.activities[0]);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'File upload generation failed.');
       } finally {
@@ -230,14 +260,22 @@ export function ActivityGeneratorForm({
           questionCount: typeof questionCount === 'number' ? questionCount : undefined,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Unable to generate activity.');
+      const parsed = await parseJsonResponse<{
+        activities?: ClassroomActivity[];
+        primary?: ClassroomActivity;
+        activity?: ClassroomActivity;
+        error?: string;
+      }>(res);
+      if (!parsed.isJson) {
+        throw new Error('Activity generation requires the live server (npm start) with GEMINI_API_KEY configured. Ready-made School Library activities and question editing work directly here.');
       }
-      if (generatePack && Array.isArray(data.activities)) {
-        onGenerated(data.activities, data.primary ?? data.activities[0]);
-      } else if (data.activity) {
-        onGenerated([data.activity], data.activity);
+      if (!parsed.ok) {
+        throw new Error(parsed.data.error || 'Unable to generate activity.');
+      }
+      if (generatePack && Array.isArray(parsed.data.activities)) {
+        onGenerated(parsed.data.activities, parsed.data.primary ?? parsed.data.activities[0]);
+      } else if (parsed.data.activity) {
+        onGenerated([parsed.data.activity], parsed.data.activity);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong.');

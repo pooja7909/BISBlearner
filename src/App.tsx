@@ -9,6 +9,16 @@ import { LiveJoinView } from './components/LiveJoinView.tsx';
 import { LiveTeacherDashboard } from './components/LiveTeacherDashboard.tsx';
 import { TeacherPreviewStage } from './components/TeacherPreviewStage.tsx';
 import heroClassroomImg from './assets/images/hero_inclusive_classroom_1794511562800.jpg';
+import {
+  deleteLocalActivity,
+  loadLocalActivities,
+  loadLocalHeroHeader,
+  loadLocalSubjects,
+  parseJsonResponse,
+  saveLocalActivities,
+  saveLocalHeroHeader,
+  saveLocalSubjects,
+} from './utils/staticStorage.ts';
 
 type AppView = 'studio' | 'library' | 'dashboard' | 'join' | 'guide' | 'preview' | 'play';
 
@@ -57,26 +67,43 @@ export default function App() {
           fetch('/api/subjects'),
           fetch('/api/settings'),
         ]);
-        const actData = await actRes.json();
-        if (!actRes.ok) throw new Error(actData.error || 'Could not load library');
-        setActivities(Array.isArray(actData.activities) ? actData.activities : []);
 
-        if (subjRes.ok) {
-          const subjData = await subjRes.json();
-          if (Array.isArray(subjData.subjects) && subjData.subjects.length > 0) {
-            setSubjects(subjData.subjects);
-          }
+        const actParsed = await parseJsonResponse<{ activities?: ClassroomActivity[]; error?: string }>(actRes);
+        if (actParsed.isJson) {
+          if (!actParsed.ok) throw new Error(actParsed.data.error || 'Could not load library');
+          const list = Array.isArray(actParsed.data.activities) ? actParsed.data.activities : [];
+          setActivities(list);
+          saveLocalActivities(list);
+        } else {
+          // Static hosting fallback (e.g. GitHub Pages)
+          setActivities(loadLocalActivities());
         }
 
-        if (settingsRes.ok) {
-          const settingsData = await settingsRes.json();
-          if (typeof settingsData.heroHeader === 'string' && settingsData.heroHeader.trim()) {
-            setHeroHeader(settingsData.heroHeader.trim());
-            setHeroHeaderDraft(settingsData.heroHeader.trim());
-          }
+        const subjParsed = await parseJsonResponse<{ subjects?: string[] }>(subjRes);
+        if (subjParsed.isJson && subjParsed.ok && Array.isArray(subjParsed.data.subjects) && subjParsed.data.subjects.length > 0) {
+          setSubjects(subjParsed.data.subjects);
+          saveLocalSubjects(subjParsed.data.subjects);
+        } else {
+          setSubjects(loadLocalSubjects());
         }
-      } catch (err) {
-        setLibraryError(err instanceof Error ? err.message : 'Unable to load activities');
+
+        const settingsParsed = await parseJsonResponse<{ heroHeader?: string }>(settingsRes);
+        if (settingsParsed.isJson && settingsParsed.ok && typeof settingsParsed.data.heroHeader === 'string' && settingsParsed.data.heroHeader.trim()) {
+          const h = settingsParsed.data.heroHeader.trim();
+          setHeroHeader(h);
+          setHeroHeaderDraft(h);
+          saveLocalHeroHeader(h);
+        } else {
+          const localHeader = loadLocalHeroHeader(DEFAULT_HERO_HEADER);
+          setHeroHeader(localHeader);
+          setHeroHeaderDraft(localHeader);
+        }
+      } catch {
+        setActivities(loadLocalActivities());
+        setSubjects(loadLocalSubjects());
+        const localHeader = loadLocalHeroHeader(DEFAULT_HERO_HEADER);
+        setHeroHeader(localHeader);
+        setHeroHeaderDraft(localHeader);
       } finally {
         setLoadingLibrary(false);
       }
@@ -98,23 +125,46 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ heroHeader: trimmed }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Could not save header text.');
-      const saved = typeof data.heroHeader === 'string' ? data.heroHeader : trimmed;
-      setHeroHeader(saved);
-      setHeroHeaderDraft(saved);
-      setEditingHeroHeader(false);
+      const parsed = await parseJsonResponse<{ heroHeader?: string; error?: string }>(res);
+      if (parsed.isJson) {
+        if (!parsed.ok) throw new Error(parsed.data.error || 'Could not save header text.');
+        const saved = typeof parsed.data.heroHeader === 'string' ? parsed.data.heroHeader : trimmed;
+        setHeroHeader(saved);
+        setHeroHeaderDraft(saved);
+        saveLocalHeroHeader(saved);
+        setEditingHeroHeader(false);
+      } else {
+        saveLocalHeroHeader(trimmed);
+        setHeroHeader(trimmed);
+        setHeroHeaderDraft(trimmed);
+        setEditingHeroHeader(false);
+      }
     } catch (err) {
-      setHeroHeaderError(err instanceof Error ? err.message : 'Could not save header text.');
+      if (err instanceof TypeError) {
+        saveLocalHeroHeader(trimmed);
+        setHeroHeader(trimmed);
+        setHeroHeaderDraft(trimmed);
+        setEditingHeroHeader(false);
+      } else {
+        setHeroHeaderError(err instanceof Error ? err.message : 'Could not save header text.');
+      }
     } finally {
       setSavingHeroHeader(false);
     }
   }
 
   function handleGenerated(createdList: ClassroomActivity[], primary: ClassroomActivity) {
-    setActivities((prev) => [...createdList, ...prev]);
+    setActivities((prev) => {
+      const next = [...createdList, ...prev];
+      saveLocalActivities(next);
+      return next;
+    });
     if (primary.subject && !subjects.some((s) => s.toLowerCase() === primary.subject.toLowerCase())) {
-      setSubjects((prev) => [...prev, primary.subject]);
+      setSubjects((prev) => {
+        const next = [...prev, primary.subject];
+        saveLocalSubjects(next);
+        return next;
+      });
     }
     setRecentPack(createdList.length > 1 ? createdList : []);
     setActiveActivity(primary);
@@ -124,26 +174,33 @@ export default function App() {
   }
 
   function handleActivityUpdated(updated: ClassroomActivity) {
-    setActivities((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+    setActivities((prev) => {
+      const next = prev.map((a) => (a.id === updated.id ? updated : a));
+      saveLocalActivities(next);
+      return next;
+    });
     setActiveActivity(updated);
     setRecentPack((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
   }
 
   function handleAdapted(adapted: ClassroomActivity) {
-    setActivities((prev) => [adapted, ...prev]);
+    setActivities((prev) => {
+      const next = [adapted, ...prev];
+      saveLocalActivities(next);
+      return next;
+    });
     setActiveActivity(adapted);
     setRecentPack((prev) => (prev.length > 0 ? [...prev, adapted] : []));
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   async function handleDeleteActivity(id: string) {
+    deleteLocalActivity(id);
+    setActivities((prev) => prev.filter((a) => a.id !== id));
     try {
-      const res = await fetch(`/api/activities/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        setActivities((prev) => prev.filter((a) => a.id !== id));
-      }
+      await fetch(`/api/activities/${id}`, { method: 'DELETE' });
     } catch {
-      // Ignore transient delete error
+      // Ignore transient/static delete error
     }
   }
 

@@ -17,6 +17,7 @@ import {
   type ClassroomActivity,
 } from '../types.ts';
 import { ActivityGuideCard } from './ActivityGuideCard.tsx';
+import { parseJsonResponse, upsertLocalActivity } from '../utils/staticStorage.ts';
 
 interface TeacherPreviewStageProps {
   activity: ClassroomActivity;
@@ -123,14 +124,33 @@ export function TeacherPreviewStage({
           payload: target.payload,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Could not save changes.');
-      setDraft(data.activity);
+      const parsed = await parseJsonResponse<{ activity?: ClassroomActivity; error?: string }>(res);
+      if (parsed.isJson) {
+        if (!parsed.ok || !parsed.data.activity) {
+          throw new Error(parsed.data.error || 'Could not save changes.');
+        }
+        setDraft(parsed.data.activity);
+        setDirty(false);
+        upsertLocalActivity(parsed.data.activity);
+        onUpdated(parsed.data.activity);
+        setStatusMsg('Changes saved to school library.');
+        return parsed.data.activity;
+      }
+      upsertLocalActivity(target);
+      setDraft(target);
       setDirty(false);
-      onUpdated(data.activity);
-      setStatusMsg('Changes saved to school library.');
-      return data.activity as ClassroomActivity;
+      onUpdated(target);
+      setStatusMsg('Changes saved in browser.');
+      return target;
     } catch (err) {
+      if (err instanceof TypeError) {
+        upsertLocalActivity(target);
+        setDraft(target);
+        setDirty(false);
+        onUpdated(target);
+        setStatusMsg('Changes saved in browser.');
+        return target;
+      }
       setErrorMsg(err instanceof Error ? err.message : 'Unable to save activity.');
       return null;
     } finally {
@@ -166,12 +186,18 @@ export function TeacherPreviewStage({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ count }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Could not generate more questions.');
-      setDraft(data.activity);
+      const parsed = await parseJsonResponse<{ activity?: ClassroomActivity; error?: string }>(res);
+      if (!parsed.isJson) {
+        throw new Error('Automatic question generation requires the live server. You can add or edit questions manually right below.');
+      }
+      if (!parsed.ok || !parsed.data.activity) {
+        throw new Error(parsed.data.error || 'Could not generate more questions.');
+      }
+      setDraft(parsed.data.activity);
       setDirty(false);
-      onUpdated(data.activity);
-      setStatusMsg(`Added fresh curriculum items! Review them below before launching.`);
+      upsertLocalActivity(parsed.data.activity);
+      onUpdated(parsed.data.activity);
+      setStatusMsg('Added fresh curriculum items! Review them below before launching.');
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Unable to add more items.');
     } finally {
