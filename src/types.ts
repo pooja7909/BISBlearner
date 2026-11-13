@@ -227,7 +227,91 @@ export interface ClassroomActivity {
   createdAt: string;
   isStarter?: boolean;
   sourceFileName?: string;
+  /** Single year the teacher chose, e.g. "Year 4". yearGroup stays the wider band. */
+  exactYear?: string;
+  /** Server-only: random key of the browser that made it. Never sent to other browsers. */
+  ownerKey?: string;
+  /** Sent by the server: true when this browser made the lesson (or is an admin). */
+  mine?: boolean;
   payload: ActivityPayload;
+}
+
+/** Single year groups teachers actually think in, mapped to the bands the AI and starters use. */
+export const EXACT_YEARS: { label: string; band: YearGroup; age: string }[] = [
+  { label: 'Reception', band: 'EYFS (Ages 4-5)', age: '4–5' },
+  { label: 'Year 1', band: 'Year 1-2 (KS1)', age: '5–6' },
+  { label: 'Year 2', band: 'Year 1-2 (KS1)', age: '6–7' },
+  { label: 'Year 3', band: 'Year 3-4 (Lower KS2)', age: '7–8' },
+  { label: 'Year 4', band: 'Year 3-4 (Lower KS2)', age: '8–9' },
+  { label: 'Year 5', band: 'Year 5-6 (Upper KS2)', age: '9–10' },
+  { label: 'Year 6', band: 'Year 5-6 (Upper KS2)', age: '10–11' },
+  { label: 'Year 7', band: 'Year 7-9 (KS3)', age: '11–12' },
+  { label: 'Year 8', band: 'Year 7-9 (KS3)', age: '12–13' },
+  { label: 'Year 9', band: 'Year 7-9 (KS3)', age: '13–14' },
+  { label: 'Year 10', band: 'Year 10-11 (GCSE)', age: '14–15' },
+  { label: 'Year 11', band: 'Year 10-11 (GCSE)', age: '15–16' },
+  { label: 'Year 12', band: 'Year 12-13 (Sixth Form)', age: '16–17' },
+  { label: 'Year 13', band: 'Year 12-13 (Sixth Form)', age: '17–18' },
+];
+
+export function bandForYear(label: string): YearGroup {
+  return EXACT_YEARS.find((y) => y.label === label)?.band ?? 'Year 7-9 (KS3)';
+}
+
+/** Short, friendly year text for cards and headers. */
+export function yearLabel(activity: Pick<ClassroomActivity, 'yearGroup' | 'exactYear'>): string {
+  if (activity.exactYear) return activity.exactYear;
+  const map: Record<string, string> = {
+    'EYFS (Ages 4-5)': 'Reception',
+    'Year 1-2 (KS1)': 'Years 1–2',
+    'Year 3-4 (Lower KS2)': 'Years 3–4',
+    'Year 5-6 (Upper KS2)': 'Years 5–6',
+    'Year 7-9 (KS3)': 'Years 7–9',
+    'Year 10-11 (GCSE)': 'Years 10–11',
+    'Year 12-13 (Sixth Form)': 'Years 12–13',
+  };
+  return map[activity.yearGroup] ?? activity.yearGroup;
+}
+
+/** Starter, main and plenary games that suit each age band. Used by "Make my lesson". */
+export function packFormatsFor(band: YearGroup): ActivityFormat[] {
+  switch (band) {
+    case 'EYFS (Ages 4-5)':
+    case 'Year 1-2 (KS1)':
+      return ['match', 'sort', 'bingo'];
+    case 'Year 3-4 (Lower KS2)':
+      return ['quiz', 'sort', 'bingo'];
+    case 'Year 5-6 (Upper KS2)':
+      return ['quiz', 'sort', 'buzzer'];
+    case 'Year 7-9 (KS3)':
+      return ['quiz', 'sort', 'buzzer'];
+    default:
+      return ['quiz', 'match', 'escape'];
+  }
+}
+
+/** Plain-English names for the stored differentiation values. */
+export const TIER_LABELS: Record<DifferentiationTier, { label: string; help: string }> = {
+  'All Learners': { label: 'Everyone', help: 'A mix of easier and harder questions' },
+  'Visual & EAL Support': {
+    label: 'Extra support',
+    help: 'Simpler words and clear clues. Good for EAL and SEND',
+  },
+  'Stretch & Challenge': { label: 'Extra challenge', help: 'Harder questions that need reasoning' },
+};
+
+/** Voice language for read-aloud. Language lessons use that language; everything else British English. */
+export function speechLangForSubject(subject: string): string {
+  const s = subject.toLowerCase();
+  const table: [string, string][] = [
+    ['french', 'fr-FR'], ['spanish', 'es-ES'], ['german', 'de-DE'], ['hungarian', 'hu-HU'],
+    ['russian', 'ru-RU'], ['italian', 'it-IT'], ['polish', 'pl-PL'], ['portuguese', 'pt-PT'],
+    ['dutch', 'nl-NL'], ['mandarin', 'zh-CN'], ['chinese', 'zh-CN'], ['japanese', 'ja-JP'],
+    ['arabic', 'ar-SA'], ['turkish', 'tr-TR'], ['greek', 'el-GR'], ['czech', 'cs-CZ'],
+    ['romanian', 'ro-RO'], ['ukrainian', 'uk-UA'], ['korean', 'ko-KR'], ['welsh', 'cy-GB'],
+  ];
+  for (const [word, lang] of table) if (s.includes(word)) return lang;
+  return 'en-GB';
 }
 
 export const STUDENT_CHARACTERS = [
@@ -294,53 +378,53 @@ export const FORMAT_META: Record<
   { label: string; shortLabel: string; summary: string }
 > = {
   sort: {
-    label: 'Category Sort & Classify',
-    shortLabel: 'Sort',
-    summary: 'Group concepts into clear buckets with instant misconception coaching',
+    label: 'Sort into groups',
+    shortLabel: 'Sort into groups',
+    summary: 'Pupils put each card into the right group',
   },
   sequence: {
-    label: 'Sequence & Timeline Builder',
-    shortLabel: 'Sequence',
-    summary: 'Order steps, processes, or historical events into logical flow',
+    label: 'Put in order',
+    shortLabel: 'Put in order',
+    summary: 'Pupils put steps or events in the right order',
   },
   match: {
-    label: 'Match & Connect Pairs',
-    shortLabel: 'Match',
-    summary: 'Link terms, examples, formulas, or translations on a tactile board',
+    label: 'Match the pairs',
+    shortLabel: 'Match pairs',
+    summary: 'Pupils join each word to its meaning',
   },
   quiz: {
-    label: 'Concept Quiz & Class Debate',
+    label: 'Quiz',
     shortLabel: 'Quiz',
-    summary: 'Interactive checks with 50/50 hints and whole-class talk prompts',
+    summary: 'Multiple-choice questions with hints',
   },
   cloze: {
-    label: 'Word & Concept Builder',
-    shortLabel: 'Word Builder',
-    summary: 'Complete living curriculum passages using an interactive word bank',
+    label: 'Fill the gaps',
+    shortLabel: 'Fill the gaps',
+    summary: 'Pupils choose words to finish sentences',
   },
   bingo: {
-    label: 'Classroom Concept Bingo',
+    label: 'Bingo',
     shortLabel: 'Bingo',
-    summary: 'Match clues called by the teacher onto randomized 3×3 concept cards',
+    summary: 'You read a clue, pupils find the answer on their card',
   },
   draw: {
-    label: 'Draw & Label Sketch Studio',
-    shortLabel: 'Draw & Label',
-    summary: 'Sketch diagrams with colour tools and label chips, then share to the board',
+    label: 'Draw and label',
+    shortLabel: 'Draw and label',
+    summary: 'Pupils draw a diagram and add labels',
   },
   wordcloud: {
-    label: 'Live Word Cloud Brainstorm',
-    shortLabel: 'Word Cloud',
-    summary: 'Collect class ideas in real time and scale key vocabulary dynamically',
+    label: 'Word cloud',
+    shortLabel: 'Word cloud',
+    summary: 'Pupils send in words; popular words grow bigger (needs pupil devices)',
   },
   buzzer: {
-    label: 'Team Duel Challenge Grid',
-    shortLabel: 'Team Duel',
-    summary: 'Jeopardy-style 100–300 pt category grid built for KS3/KS4 group play',
+    label: 'Team points quiz',
+    shortLabel: 'Team points quiz',
+    summary: 'Teams pick a topic and a points value, then answer',
   },
   escape: {
-    label: 'Mystery Codebreaker Escape',
+    label: 'Codebreaker',
     shortLabel: 'Codebreaker',
-    summary: 'Crack 4 curriculum riddles in sequence to unlock the vault code',
+    summary: 'Solve 4 puzzles in a row to unlock a secret code',
   },
 };

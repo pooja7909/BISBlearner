@@ -1,17 +1,18 @@
 import { useState } from 'react';
-import { FileText, Layers, Loader2, Plus, Sparkles, UploadCloud, X } from 'lucide-react';
+import { ChevronDown, FileText, Loader2, Sparkles, UploadCloud, X } from 'lucide-react';
 import {
   ACTIVITY_FORMATS,
   DIFFERENTIATION_TIERS,
+  EXACT_YEARS,
   FORMAT_META,
-  YEAR_GROUPS,
+  TIER_LABELS,
+  bandForYear,
+  packFormatsFor,
   type ActivityFormat,
   type ClassroomActivity,
   type DifferentiationTier,
   type SubjectArea,
-  type YearGroup,
 } from '../types.ts';
-import { loadLocalSubjects, parseJsonResponse, saveLocalSubjects } from '../utils/staticStorage.ts';
 
 interface ActivityGeneratorFormProps {
   subjects: string[];
@@ -22,59 +23,63 @@ interface ActivityGeneratorFormProps {
 interface SamplePrompt {
   label: string;
   topic: string;
-  yearGroup: YearGroup;
+  exactYear: string;
   subject: SubjectArea;
   objectives: string;
-  format: ActivityFormat;
 }
 
 const SAMPLE_PROMPTS: SamplePrompt[] = [
   {
-    label: 'Reception · Counting & Grouping Shapes',
-    topic: '2D Shapes Around Our Classroom',
-    yearGroup: 'EYFS (Ages 4-5)',
+    label: 'Reception · 2D shapes',
+    topic: '2D shapes around our classroom',
+    exactYear: 'Reception',
     subject: 'Mathematics',
     objectives:
-      'Recognise circles, triangles, squares, and rectangles by counting their sides and corners.\nSpot everyday classroom objects that match each shape.',
-    format: 'sort',
+      'Recognise circles, triangles, squares and rectangles by counting their sides and corners.\nSpot everyday classroom objects that match each shape.',
   },
   {
-    label: 'Year 4 · States of Matter',
-    topic: 'Solids, Liquids, and Gases',
-    yearGroup: 'Year 3-4 (Lower KS2)',
+    label: 'Year 4 · States of matter',
+    topic: 'Solids, liquids and gases',
+    exactYear: 'Year 4',
     subject: 'Science',
     objectives:
-      'Compare and group materials together according to whether they are solids, liquids, or gases.\nExplain how heating and cooling change water between states.',
-    format: 'bingo',
+      'Group materials into solids, liquids and gases.\nExplain how heating and cooling change water between states.',
   },
   {
-    label: 'Year 8 · Coding & Loops Duel',
-    topic: 'Iteration, Loops & Logic in Python',
-    yearGroup: 'Year 7-9 (KS3)',
-    subject: 'Computing',
-    objectives:
-      'Distinguish between count-controlled (for) loops and condition-controlled (while) loops.\nTrace step-by-step how a loop updates a variable.',
-    format: 'buzzer',
-  },
-  {
-    label: 'Year 8 · French Café & Ordering',
-    topic: 'Au Café — Ordering Food, Polite Phrases & Numbers',
-    yearGroup: 'Year 7-9 (KS3)',
+    label: 'Year 8 · French café',
+    topic: 'Au café: ordering food and drink',
+    exactYear: 'Year 8',
     subject: 'French',
     objectives:
-      'Match everyday French café phrases and prices to accurate English meanings.\nUse polite greetings and accent marks correctly when ordering.',
-    format: 'match',
+      'Match everyday café phrases to their English meanings.\nUse polite greetings when ordering.',
   },
   {
-    label: 'Year 10 · Chemistry Codebreaker',
-    topic: 'Atomic Structure & Periodic Table',
-    yearGroup: 'Year 10-11 (GCSE)',
+    label: 'Year 10 · Atomic structure',
+    topic: 'Atomic structure and the periodic table',
+    exactYear: 'Year 10',
     subject: 'Science',
     objectives:
-      'Deduce proton, neutron, and electron counts from atomic numbers and mass numbers.\nLink Group 1 and Group 7 reactivity to outer electron shells.',
-    format: 'escape',
+      'Work out protons, neutrons and electrons from atomic and mass numbers.\nLink Group 1 and Group 7 reactivity to outer electrons.',
   },
 ];
+
+const ADD_SUBJECT = '__ADD_NEW__';
+
+function readStored(key: string): string {
+  try {
+    return window.localStorage.getItem(key) || '';
+  } catch {
+    return '';
+  }
+}
+
+function store(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // ignore
+  }
+}
 
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -84,95 +89,80 @@ function readFileAsBase64(file: File): Promise<string> {
       const commaIdx = result.indexOf(',');
       resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
     };
-    reader.onerror = () => reject(new Error('Could not read the selected file.'));
+    reader.onerror = () => reject(new Error('Could not open that file. Please try a different one.'));
     reader.readAsDataURL(file);
   });
 }
 
-export function ActivityGeneratorForm({
-  subjects,
-  onSubjectAdded,
-  onGenerated,
-}: ActivityGeneratorFormProps) {
-  const [sourceTab, setSourceTab] = useState<'topic' | 'file'>('topic');
+function StepLabel({ n, htmlFor, children }: { n: number; htmlFor?: string; children: React.ReactNode }) {
+  return (
+    <label htmlFor={htmlFor} className="flex items-center gap-2.5 text-base font-semibold text-slate-950">
+      <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-700 text-sm font-bold text-white">
+        {n}
+      </span>
+      {children}
+    </label>
+  );
+}
 
+export function ActivityGeneratorForm({ subjects, onSubjectAdded, onGenerated }: ActivityGeneratorFormProps) {
   const [topic, setTopic] = useState('');
-  const [yearGroup, setYearGroup] = useState<YearGroup>('Year 7-9 (KS3)');
-  const [subject, setSubject] = useState<SubjectArea>('Science');
+  const [exactYear, setExactYear] = useState(() => readStored('cs:last-year'));
+  const [subject, setSubject] = useState<SubjectArea>(() => readStored('cs:last-subject') || 'Science');
   const [addingSubject, setAddingSubject] = useState(false);
   const [customSubjectInput, setCustomSubjectInput] = useState('');
   const [savingSubject, setSavingSubject] = useState(false);
   const [subjectError, setSubjectError] = useState<string | null>(null);
-
   const [objectivesText, setObjectivesText] = useState('');
-  const [format, setFormat] = useState<ActivityFormat>('bingo');
-  const [differentiation, setDifferentiation] =
-    useState<DifferentiationTier>('All Learners');
-  const [questionCount, setQuestionCount] = useState<number | ''>('');
-  const [generatePack, setGeneratePack] = useState(false);
 
+  // "More options" (hidden by default)
+  const [showMore, setShowMore] = useState(false);
+  const [makeWhat, setMakeWhat] = useState<'lesson' | 'single'>('lesson');
+  const [format, setFormat] = useState<ActivityFormat>('quiz');
+  const [differentiation, setDifferentiation] = useState<DifferentiationTier>('All Learners');
+  const [questionCount, setQuestionCount] = useState<number | ''>('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const generatePack = makeWhat === 'lesson';
+  const packPreview = exactYear
+    ? packFormatsFor(bandForYear(exactYear)).map((f) => FORMAT_META[f].shortLabel.toLowerCase())
+    : null;
 
   async function handleSaveNewSubject() {
     const clean = customSubjectInput.trim();
     if (!clean) {
-      setSubjectError('Enter a subject or world language name.');
+      setSubjectError('Type the subject name first.');
       return;
     }
     setSavingSubject(true);
     setSubjectError(null);
-    const applyLocalSubject = () => {
-      const current = loadLocalSubjects();
-      const existing = current.find((s) => s.toLowerCase() === clean.toLowerCase());
-      const added = existing || clean;
-      const next = existing ? current : [...current, added];
-      saveLocalSubjects(next);
-      onSubjectAdded(next, added);
-      setSubject(added);
-      setCustomSubjectInput('');
-      setAddingSubject(false);
-    };
     try {
       const res = await fetch('/api/subjects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: clean }),
       });
-      const parsed = await parseJsonResponse<{ subjects?: string[]; subject?: string; error?: string }>(res);
-      if (parsed.isJson) {
-        if (!parsed.ok) {
-          throw new Error(parsed.data.error || 'Could not add subject.');
-        }
-        if (Array.isArray(parsed.data.subjects)) {
-          saveLocalSubjects(parsed.data.subjects);
-          onSubjectAdded(parsed.data.subjects, parsed.data.subject || clean);
-        }
-        setSubject(parsed.data.subject || clean);
-        setCustomSubjectInput('');
-        setAddingSubject(false);
-      } else {
-        applyLocalSubject();
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not add that subject.');
+      if (Array.isArray(data.subjects)) onSubjectAdded(data.subjects, data.subject || clean);
+      setSubject(data.subject || clean);
+      setCustomSubjectInput('');
+      setAddingSubject(false);
     } catch (err) {
-      if (err instanceof TypeError) {
-        applyLocalSubject();
-      } else {
-        setSubjectError(err instanceof Error ? err.message : 'Unable to save subject.');
-      }
+      setSubjectError(err instanceof Error ? err.message : 'Could not add that subject.');
     } finally {
       setSavingSubject(false);
     }
   }
 
   function applySample(sample: SamplePrompt) {
-    setSourceTab('topic');
     setTopic(sample.topic);
-    setYearGroup(sample.yearGroup);
+    setExactYear(sample.exactYear);
     setSubject(sample.subject);
     setObjectivesText(sample.objectives);
-    setFormat(sample.format);
     setError(null);
   }
 
@@ -180,105 +170,82 @@ export function ActivityGeneratorForm({
     e.preventDefault();
     setError(null);
 
-    const objectives = objectivesText
+    if (!selectedFile && !topic.trim()) {
+      setError('Step 1: type what you are teaching, for example "Fractions" or "The Romans".');
+      document.getElementById('topic-input')?.focus();
+      return;
+    }
+    if (!exactYear) {
+      setError('Step 2: choose the year group.');
+      document.getElementById('year-select')?.focus();
+      return;
+    }
+
+    let objectives = objectivesText
       .split('\n')
       .map((line) => line.replace(/^[-•*\d.)\s]+/, '').trim())
       .filter(Boolean);
+    // Objectives are optional for the teacher: fall back to a sensible one.
+    if (objectives.length === 0 && !selectedFile) {
+      objectives = [`Understand and remember the key ideas about ${topic.trim()}`];
+    }
 
-    if (sourceTab === 'file') {
-      if (!selectedFile) {
-        setError('Choose a presentation (.pptx), PDF, image, or document file to upload.');
-        return;
-      }
-      if (selectedFile.size > 14 * 1024 * 1024) {
-        setError('Please upload a file smaller than 14 MB.');
-        return;
-      }
+    store('cs:last-year', exactYear);
+    store('cs:last-subject', subject);
 
-      setLoading(true);
-      try {
+    const common = {
+      exactYear,
+      yearGroup: bandForYear(exactYear),
+      subject,
+      objectives,
+      format,
+      differentiation,
+      generatePack,
+      questionCount: typeof questionCount === 'number' ? questionCount : undefined,
+    };
+
+    setLoading(true);
+    try {
+      if (selectedFile) {
+        if (selectedFile.size > 14 * 1024 * 1024) {
+          throw new Error('That file is too big (over 14 MB). Try saving it as a PDF, or upload fewer slides.');
+        }
         const base64Data = await readFileAsBase64(selectedFile);
         const res = await fetch('/api/activities/generate-from-file', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            ...common,
             fileName: selectedFile.name,
             mimeType: selectedFile.type || 'application/octet-stream',
             base64Data,
             topic: topic.trim() || undefined,
-            yearGroup,
-            subject,
-            objectives,
-            format,
-            differentiation,
-            generatePack,
-            questionCount: typeof questionCount === 'number' ? questionCount : undefined,
           }),
         });
-        const parsed = await parseJsonResponse<{
-          activities?: ClassroomActivity[];
-          primary?: ClassroomActivity;
-          error?: string;
-        }>(res);
-        if (!parsed.isJson) {
-          throw new Error('File upload generation requires the live server (npm start) with GEMINI_API_KEY configured. Ready-made School Library activities and question editing work directly here.');
-        }
-        if (!parsed.ok || !Array.isArray(parsed.data.activities)) {
-          throw new Error(parsed.data.error || 'Could not create activity from file.');
-        }
-        onGenerated(parsed.data.activities, parsed.data.primary ?? parsed.data.activities[0]);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'File upload generation failed.');
-      } finally {
-        setLoading(false);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not make a lesson from that file.');
+        onGenerated(data.activities, data.primary ?? data.activities[0]);
+        return;
       }
-      return;
-    }
 
-    if (!topic.trim()) {
-      setError('Enter a lesson topic to build your classroom activity.');
-      return;
-    }
-    if (objectives.length === 0) {
-      setError('Add at least one lesson objective so the activity targets what students need to learn.');
-      return;
-    }
-
-    setLoading(true);
-    try {
       const res = await fetch('/api/activities/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          topic: topic.trim(),
-          yearGroup,
-          subject,
-          objectives,
-          format,
-          differentiation,
-          generatePack,
-          questionCount: typeof questionCount === 'number' ? questionCount : undefined,
-        }),
+        body: JSON.stringify({ ...common, topic: topic.trim() }),
       });
-      const parsed = await parseJsonResponse<{
-        activities?: ClassroomActivity[];
-        primary?: ClassroomActivity;
-        activity?: ClassroomActivity;
-        error?: string;
-      }>(res);
-      if (!parsed.isJson) {
-        throw new Error('Activity generation requires the live server (npm start) with GEMINI_API_KEY configured. Ready-made School Library activities and question editing work directly here.');
-      }
-      if (!parsed.ok) {
-        throw new Error(parsed.data.error || 'Unable to generate activity.');
-      }
-      if (generatePack && Array.isArray(parsed.data.activities)) {
-        onGenerated(parsed.data.activities, parsed.data.primary ?? parsed.data.activities[0]);
-      } else if (parsed.data.activity) {
-        onGenerated([parsed.data.activity], parsed.data.activity);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not make the lesson.');
+      if (generatePack && Array.isArray(data.activities)) {
+        onGenerated(data.activities, data.primary ?? data.activities[0]);
+      } else if (data.activity) {
+        onGenerated([data.activity], data.activity);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong.');
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Something went wrong. Check the internet connection and press the button again.'
+      );
     } finally {
       setLoading(false);
     }
@@ -286,369 +253,354 @@ export function ActivityGeneratorForm({
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 shadow-sm">
-      <div className="mb-6 flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-slate-200 pb-5">
-        <div>
-          <h2 className="font-display text-2xl font-semibold text-slate-950">
-            Create an Interactive Classroom Activity
-          </h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Type your topic and objectives, or upload slides, PDFs, or worksheet photos to turn them into live play.
-          </p>
-        </div>
-
-        {/* Source Switcher */}
-        <div className="grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1 shrink-0">
-          <button
-            type="button"
-            onClick={() => {
-              setSourceTab('topic');
-              setError(null);
-            }}
-            className={`rounded-lg px-4 py-2 text-xs font-semibold transition-colors min-h-[38px] whitespace-nowrap ${
-              sourceTab === 'topic'
-                ? 'bg-white text-slate-950 shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            From Topic & Objectives
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setSourceTab('file');
-              setError(null);
-            }}
-            className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition-colors min-h-[38px] whitespace-nowrap ${
-              sourceTab === 'file'
-                ? 'bg-white text-slate-950 shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <UploadCloud className="h-3.5 w-3.5" />
-            Upload Slides / PDF / Image
-          </button>
-        </div>
+      <div className="mb-6">
+        <h2 className="font-display text-2xl sm:text-3xl font-semibold text-slate-950">Make a lesson game</h2>
+        <p className="mt-1 text-base text-slate-600">
+          Fill in the boxes and press the blue button. It takes about 30 seconds.
+        </p>
       </div>
 
-      {sourceTab === 'topic' && (
-        <div className="mb-6 space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Quick-fill whole-school examples
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {SAMPLE_PROMPTS.map((sample) => (
-              <button
-                key={sample.label}
-                type="button"
-                onClick={() => applySample(sample)}
-                className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 hover:border-blue-400 hover:bg-blue-50/50 hover:text-blue-950 transition-colors min-h-[36px] whitespace-nowrap"
-              >
-                {sample.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <form onSubmit={handleSubmit} className="space-y-6">
-        {sourceTab === 'file' && (
-          <div className="space-y-3">
-            <label className="block text-sm font-semibold text-slate-900">
-              Upload Presentation, PDF, Image, or Notes
-            </label>
-            {!selectedFile ? (
-              <label className="flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/70 p-8 text-center cursor-pointer hover:border-blue-500 hover:bg-blue-50/30 transition-colors">
-                <UploadCloud className="h-8 w-8 text-blue-700 mb-2" />
-                <span className="text-sm font-semibold text-slate-900">
-                  Click to choose a file from your device
-                </span>
-                <span className="mt-1 text-xs text-slate-500">
-                  Supports PowerPoint (.pptx), PDF, Images (.png, .jpg, .webp), Word (.docx), Text & CSV
-                </span>
-                <input
-                  type="file"
-                  accept=".pptx,.pdf,.docx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.webp,.gif,application/pdf,image/*"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0] || null;
-                    setSelectedFile(file);
-                    setError(null);
-                  }}
-                  className="sr-only"
-                />
-              </label>
-            ) : (
-              <div className="flex items-center justify-between rounded-xl border border-blue-200 bg-blue-50/60 p-4">
-                <div className="flex items-center gap-3 min-w-0">
-                  <FileText className="h-6 w-6 text-blue-700 shrink-0" />
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold text-slate-950 truncate">
-                      {selectedFile.name}
-                    </p>
-                    <p className="text-xs text-slate-600 tabular-nums">
-                      {(selectedFile.size / 1024).toFixed(0)} KB · Ready to transform into an activity
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setSelectedFile(null)}
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-blue-200 bg-white text-slate-600 hover:text-red-700 shrink-0"
-                  aria-label="Remove file"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-5">
-          <div className="md:col-span-6 space-y-1.5">
-            <label htmlFor="topic-input" className="block text-sm font-semibold text-slate-900">
-              {sourceTab === 'file' ? 'Lesson Topic (Optional — auto-detected from file)' : 'Lesson Topic'}
-            </label>
+      <form onSubmit={handleSubmit} className="space-y-7" aria-busy={loading}>
+        <fieldset disabled={loading} className="space-y-7">
+          {/* Step 1 */}
+          <div className="space-y-2">
+            <StepLabel n={1} htmlFor="topic-input">
+              What are you teaching?
+              {selectedFile && <span className="text-sm font-normal text-slate-500">(optional when using a file)</span>}
+            </StepLabel>
             <input
               id="topic-input"
               type="text"
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
-              placeholder="e.g., Volcanoes & Plate Tectonics, Fractions, Macbeth"
-              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20 min-h-[44px]"
+              placeholder="For example: Fractions, The Romans, Plants, Macbeth"
+              className="w-full rounded-xl border-2 border-slate-300 bg-white px-4 py-3 text-lg text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-600/15"
             />
           </div>
 
-          <div className="md:col-span-3 space-y-1.5">
-            <label htmlFor="year-select" className="block text-sm font-semibold text-slate-900">
-              Year Group
-            </label>
-            <select
-              id="year-select"
-              value={yearGroup}
-              onChange={(e) => setYearGroup(e.target.value as YearGroup)}
-              className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20 min-h-[44px]"
-            >
-              {YEAR_GROUPS.map((yg) => (
-                <option key={yg} value={yg}>
-                  {yg}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="md:col-span-3 space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <label htmlFor="subject-select" className="block text-sm font-semibold text-slate-900">
-                Subject or Language
-              </label>
-              <button
-                type="button"
-                onClick={() => {
-                  setAddingSubject((prev) => !prev);
-                  setSubjectError(null);
-                }}
-                className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 hover:text-blue-800 whitespace-nowrap"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                {addingSubject ? 'Cancel' : 'Add subject'}
-              </button>
-            </div>
-            <select
-              id="subject-select"
-              value={subject}
-              onChange={(e) => {
-                if (e.target.value === '__ADD_NEW__') {
-                  setAddingSubject(true);
-                  setSubjectError(null);
-                } else {
-                  setSubject(e.target.value);
-                }
-              }}
-              className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20 min-h-[44px]"
-            >
-              {subjects.map((subj) => (
-                <option key={subj} value={subj}>
-                  {subj}
-                </option>
-              ))}
-              <option value="__ADD_NEW__">+ Add new subject or language…</option>
-            </select>
-            {addingSubject && (
-              <div className="mt-2 rounded-xl border border-blue-200 bg-blue-50/60 p-2.5 space-y-2">
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="text"
-                    value={customSubjectInput}
-                    onChange={(e) => setCustomSubjectInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        handleSaveNewSubject();
-                      }
-                    }}
-                    placeholder="e.g., Drama, Latin, Italian, Polish"
-                    className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-blue-600 focus:outline-none min-h-[36px]"
-                  />
-                  <button
-                    type="button"
-                    disabled={savingSubject}
-                    onClick={handleSaveNewSubject}
-                    className="rounded-lg bg-blue-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-60 min-h-[36px] whitespace-nowrap shrink-0"
-                  >
-                    {savingSubject ? 'Adding…' : 'Add'}
-                  </button>
-                </div>
-                {subjectError && (
-                  <p className="text-[11px] font-medium text-red-700">{subjectError}</p>
+          {/* Step 2 */}
+          <div className="space-y-2">
+            <StepLabel n={2} htmlFor="year-select">Who is it for?</StepLabel>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <span className="block text-sm text-slate-600">Year group</span>
+                <select
+                  id="year-select"
+                  value={exactYear}
+                  onChange={(e) => setExactYear(e.target.value)}
+                  className="w-full rounded-xl border-2 border-slate-300 bg-white px-3.5 py-3 text-base text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-600/15"
+                >
+                  <option value="" disabled>
+                    Choose a year group…
+                  </option>
+                  {EXACT_YEARS.map((y) => (
+                    <option key={y.label} value={y.label}>
+                      {y.label} (age {y.age})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <span className="block text-sm text-slate-600">Subject</span>
+                <select
+                  id="subject-select"
+                  aria-label="Subject"
+                  value={addingSubject ? ADD_SUBJECT : subject}
+                  onChange={(e) => {
+                    if (e.target.value === ADD_SUBJECT) {
+                      setAddingSubject(true);
+                      setSubjectError(null);
+                    } else {
+                      setAddingSubject(false);
+                      setSubject(e.target.value);
+                    }
+                  }}
+                  className="w-full rounded-xl border-2 border-slate-300 bg-white px-3.5 py-3 text-base text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-600/15"
+                >
+                  {subjects.map((subj) => (
+                    <option key={subj} value={subj}>
+                      {subj}
+                    </option>
+                  ))}
+                  <option value={ADD_SUBJECT}>+ My subject isn't listed…</option>
+                </select>
+                {addingSubject && (
+                  <div className="mt-2 rounded-xl border border-blue-200 bg-blue-50/60 p-3 space-y-2">
+                    <label htmlFor="new-subject" className="block text-sm font-medium text-slate-800">
+                      Type the subject name
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="new-subject"
+                        type="text"
+                        value={customSubjectInput}
+                        onChange={(e) => setCustomSubjectInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleSaveNewSubject();
+                          }
+                        }}
+                        placeholder="e.g. Drama, Latin, Italian"
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 focus:border-blue-600 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        disabled={savingSubject}
+                        onClick={handleSaveNewSubject}
+                        className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-60 min-h-[42px] whitespace-nowrap"
+                      >
+                        {savingSubject ? 'Adding…' : 'Add'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAddingSubject(false)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 min-h-[42px]"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    {subjectError && <p className="text-sm font-medium text-red-700">{subjectError}</p>}
+                  </div>
                 )}
               </div>
-            )}
-          </div>
-        </div>
-
-        <div className="space-y-1.5">
-          <label htmlFor="objectives-input" className="block text-sm font-semibold text-slate-900">
-            {sourceTab === 'file'
-              ? 'Custom Lesson Objectives (Optional — inferred from file if blank)'
-              : 'Lesson Objectives (one per line)'}
-          </label>
-          <textarea
-            id="objectives-input"
-            rows={3}
-            value={objectivesText}
-            onChange={(e) => setObjectivesText(e.target.value)}
-            placeholder={`Describe what students should understand or practise.\nFor example:\n- Identify key cell organelles and explain each function.\n- Apply key terminology accurately in class play.`}
-            className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
-          />
-        </div>
-
-        {/* All 10 Interactive Format Cards */}
-        <div className="space-y-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-sm font-semibold text-slate-900">
-              Interactive Activity Format (10 Classroom Modes)
-            </span>
-            <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={generatePack}
-                onChange={(e) => setGeneratePack(e.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-600"
-              />
-              <Layers className="h-3.5 w-3.5 text-blue-700" />
-              Build 3-Part Lesson Pack (Sort + Team Duel + Bingo)
-            </label>
+            </div>
           </div>
 
-          {!generatePack && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-              {ACTIVITY_FORMATS.map((fmt) => {
-                const meta = FORMAT_META[fmt];
-                const isSelected = format === fmt;
-                return (
-                  <button
-                    key={fmt}
-                    type="button"
-                    onClick={() => setFormat(fmt)}
-                    className={`flex flex-col items-start rounded-xl border p-3.5 text-left transition-all ${
-                      isSelected
-                        ? 'border-blue-600 bg-blue-50/70 ring-2 ring-blue-600/15'
-                        : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/60'
-                    }`}
-                  >
-                    <span className="text-sm font-semibold text-slate-950">
-                      {meta.shortLabel}
-                    </span>
-                    <span className="mt-1 text-xs text-slate-600 leading-snug">
-                      {meta.summary}
-                    </span>
-                  </button>
-                );
-              })}
+          {/* Step 3 */}
+          <div className="space-y-2">
+            <StepLabel n={3} htmlFor="objectives-input">
+              What should pupils learn?
+              <span className="text-sm font-normal text-slate-500">(optional, but it helps)</span>
+            </StepLabel>
+            <textarea
+              id="objectives-input"
+              rows={3}
+              value={objectivesText}
+              onChange={(e) => setObjectivesText(e.target.value)}
+              placeholder={'Write one idea per line, for example:\nName the parts of a plant\nExplain what each part does'}
+              className="w-full rounded-xl border-2 border-slate-300 bg-white px-4 py-3 text-base text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-600/15"
+            />
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <span className="text-sm text-slate-600">Not sure what to write? Try an example:</span>
+              {SAMPLE_PROMPTS.map((sample) => (
+                <button
+                  key={sample.label}
+                  type="button"
+                  onClick={() => applySample(sample)}
+                  className="rounded-full border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm text-slate-700 hover:border-blue-500 hover:bg-blue-50 transition-colors"
+                >
+                  {sample.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {selectedFile && (
+            <div className="flex items-center justify-between gap-3 rounded-xl border-2 border-blue-300 bg-blue-50 p-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <FileText className="h-6 w-6 text-blue-700 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-base font-semibold text-slate-950 truncate">Using your file: {selectedFile.name}</p>
+                  <p className="text-sm text-slate-600">The games will be made from what is in this file.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedFile(null)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:text-red-700 shrink-0"
+              >
+                <X className="h-4 w-4" />
+                Don't use file
+              </button>
             </div>
           )}
-        </div>
 
-        {/* Differentiation Focus, Item Count & Submit */}
-        <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 border-t border-slate-200 pt-5">
-          <div className="flex flex-wrap items-end gap-5">
-            <div className="space-y-1.5">
-              <span className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Learner Inclusion Focus
+          {/* More options */}
+          <div className="rounded-xl border border-slate-200">
+            <button
+              type="button"
+              aria-expanded={showMore}
+              onClick={() => setShowMore((v) => !v)}
+              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-base font-semibold text-slate-800 hover:bg-slate-50 rounded-xl"
+            >
+              <span>
+                More options{' '}
+                <span className="font-normal text-slate-500 text-sm">
+                  (use my slides, choose the game, extra support or challenge)
+                </span>
               </span>
-              <div className="flex flex-wrap gap-1.5 rounded-xl bg-slate-100 p-1">
-                {DIFFERENTIATION_TIERS.map((tier) => (
-                  <button
-                    key={tier}
-                    type="button"
-                    onClick={() => setDifferentiation(tier)}
-                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors min-h-[36px] whitespace-nowrap ${
-                      differentiation === tier
-                        ? 'bg-white text-slate-950 shadow-sm'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
+              <ChevronDown className={`h-5 w-5 shrink-0 transition-transform ${showMore ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showMore && (
+              <div className="space-y-6 border-t border-slate-200 p-4 sm:p-5">
+                {/* Upload */}
+                <div className="space-y-2">
+                  <p className="text-base font-semibold text-slate-900">Start from my own slides or worksheet</p>
+                  {!selectedFile ? (
+                    <label className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-slate-50/70 p-6 text-center cursor-pointer hover:border-blue-500 hover:bg-blue-50/30 transition-colors">
+                      <UploadCloud className="h-7 w-7 text-blue-700 mb-1.5" />
+                      <span className="text-base font-semibold text-slate-900">Choose a file from your computer</span>
+                      <span className="mt-1 text-sm text-slate-500">
+                        PowerPoint, PDF, Word, or a photo of a worksheet
+                      </span>
+                      <input
+                        type="file"
+                        accept=".pptx,.pdf,.docx,.txt,.md,.csv,.png,.jpg,.jpeg,.webp,.gif,application/pdf,image/*"
+                        onChange={(e) => {
+                          setSelectedFile(e.target.files?.[0] || null);
+                          setError(null);
+                        }}
+                        className="sr-only"
+                      />
+                    </label>
+                  ) : (
+                    <p className="text-sm text-slate-600">File chosen: {selectedFile.name} (shown above).</p>
+                  )}
+                </div>
+
+                {/* What to make */}
+                <div className="space-y-2">
+                  <p className="text-base font-semibold text-slate-900">What should I make?</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {(
+                      [
+                        ['lesson', 'A full lesson (3 games)', 'Recommended. Start, main and end games.'],
+                        ['single', 'Just one game', 'You choose which game below.'],
+                      ] as const
+                    ).map(([value, title, help]) => (
+                      <label
+                        key={value}
+                        className={`flex cursor-pointer items-start gap-3 rounded-xl border-2 p-3 ${
+                          makeWhat === value ? 'border-blue-600 bg-blue-50/60' : 'border-slate-200 bg-white'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="make-what"
+                          value={value}
+                          checked={makeWhat === value}
+                          onChange={() => setMakeWhat(value)}
+                          className="mt-1 h-4 w-4"
+                        />
+                        <span>
+                          <span className="block text-base font-semibold text-slate-950">{title}</span>
+                          <span className="block text-sm text-slate-600">{help}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+
+                  {makeWhat === 'single' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pt-2" role="radiogroup" aria-label="Choose a game">
+                      {ACTIVITY_FORMATS.map((fmt) => {
+                        const meta = FORMAT_META[fmt];
+                        const isSelected = format === fmt;
+                        return (
+                          <button
+                            key={fmt}
+                            type="button"
+                            role="radio"
+                            aria-checked={isSelected}
+                            onClick={() => setFormat(fmt)}
+                            className={`flex flex-col items-start rounded-xl border-2 p-3 text-left transition-colors ${
+                              isSelected ? 'border-blue-600 bg-blue-50/70' : 'border-slate-200 bg-white hover:border-slate-300'
+                            }`}
+                          >
+                            <span className="text-base font-semibold text-slate-950">{meta.shortLabel}</span>
+                            <span className="mt-0.5 text-sm text-slate-600 leading-snug">{meta.summary}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Support */}
+                <div className="space-y-2">
+                  <p className="text-base font-semibold text-slate-900">Help for my class</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {DIFFERENTIATION_TIERS.map((tier) => (
+                      <label
+                        key={tier}
+                        className={`flex cursor-pointer items-start gap-3 rounded-xl border-2 p-3 ${
+                          differentiation === tier ? 'border-blue-600 bg-blue-50/60' : 'border-slate-200 bg-white'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="support"
+                          checked={differentiation === tier}
+                          onChange={() => setDifferentiation(tier)}
+                          className="mt-1 h-4 w-4"
+                        />
+                        <span>
+                          <span className="block text-base font-semibold text-slate-950">{TIER_LABELS[tier].label}</span>
+                          <span className="block text-sm text-slate-600">{TIER_LABELS[tier].help}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Count */}
+                <div className="space-y-2">
+                  <label htmlFor="question-count-select" className="block text-base font-semibold text-slate-900">
+                    How many questions in each game?
+                  </label>
+                  <select
+                    id="question-count-select"
+                    value={questionCount}
+                    onChange={(e) => setQuestionCount(e.target.value ? Number(e.target.value) : '')}
+                    className="rounded-xl border-2 border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 focus:border-blue-600 focus:outline-none"
                   >
-                    {tier}
-                  </button>
-                ))}
+                    <option value="">Let it decide (usually 6 to 8)</option>
+                    <option value={5}>5</option>
+                    <option value={8}>8</option>
+                    <option value={10}>10</option>
+                    <option value={12}>12</option>
+                  </select>
+                </div>
               </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <label
-                htmlFor="question-count-select"
-                className="block text-xs font-semibold uppercase tracking-wide text-slate-500"
-              >
-                Questions / Items
-              </label>
-              <select
-                id="question-count-select"
-                value={questionCount}
-                onChange={(e) =>
-                  setQuestionCount(e.target.value ? Number(e.target.value) : '')
-                }
-                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:border-blue-600 focus:outline-none min-h-[42px]"
-              >
-                <option value="">Standard (Auto)</option>
-                <option value={5}>5 items</option>
-                <option value={8}>8 items</option>
-                <option value={10}>10 items</option>
-                <option value={12}>12 items</option>
-              </select>
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-700 px-6 py-3 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-60 transition-colors min-h-[48px] whitespace-nowrap shrink-0"
-          >
-            {loading ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                {sourceTab === 'file'
-                  ? 'Reading File & Building…'
-                  : generatePack
-                  ? 'Building 3 Activities…'
-                  : 'Building Activity…'}
-              </>
-            ) : (
-              <>
-                <Sparkles className="h-4 w-4" />
-                {generatePack
-                  ? 'Build & Preview 3-Part Pack'
-                  : sourceTab === 'file'
-                  ? 'Preview Activity from File'
-                  : 'Build & Preview Activity'}
-              </>
             )}
-          </button>
-        </div>
-
-        {error && (
-          <div className="rounded-xl border border-red-200 bg-red-50 p-3.5 text-sm font-medium text-red-900">
-            {error}
           </div>
-        )}
+          {/* Main button */}
+          <div className="space-y-2 border-t border-slate-200 pt-6">
+            <button
+              type="submit"
+              disabled={loading}
+              className="inline-flex w-full sm:w-auto items-center justify-center gap-2.5 rounded-2xl bg-blue-700 px-8 py-4 text-lg font-semibold text-white hover:bg-blue-800 disabled:opacity-70 transition-colors min-h-[60px]"
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  Making your lesson… (about 30 seconds)
+                </>
+              ) : (
+                <>
+                  <Sparkles className="h-5 w-5" />
+                  {generatePack ? 'Make my lesson' : `Make one ${FORMAT_META[format].shortLabel.toLowerCase()} game`}
+                </>
+              )}
+            </button>
+            <p className="text-sm text-slate-600">
+              {generatePack
+                ? packPreview
+                  ? `You'll get 3 games that suit ${exactYear}: a ${packPreview[0]} to start, ${packPreview[1]} for the main part, and ${packPreview[2]} to finish.`
+                  : "You'll get 3 games: one to start the lesson, one for the main part, and one to finish."
+                : 'You will get one game.'}{' '}
+              You can check and change every question before pupils see anything.
+            </p>
+          </div>
+
+          {error && (
+            <div role="alert" className="rounded-xl border-2 border-red-200 bg-red-50 p-4 text-base font-medium text-red-900">
+              {error}
+            </div>
+          )}
+
+        </fieldset>
       </form>
     </div>
   );

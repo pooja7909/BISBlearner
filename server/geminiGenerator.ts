@@ -48,6 +48,13 @@ export interface GenerateActivityRequest {
   format: ActivityFormat;
   differentiation: DifferentiationTier;
   questionCount?: number;
+  /** Single year chosen by the teacher, e.g. "Year 4". */
+  exactYear?: string;
+}
+
+/** "Year 4 (part of Year 3-4 (Lower KS2))" so the AI pitches at the exact year. */
+function yearForPrompt(yearGroup: string, exactYear?: string): string {
+  return exactYear ? `${exactYear} (England; within the ${yearGroup} band). Pitch everything at ${exactYear} exactly.` : yearGroup;
 }
 
 export interface GenerateFromFileRequest {
@@ -62,6 +69,8 @@ export interface GenerateFromFileRequest {
   differentiation: DifferentiationTier;
   generatePack?: boolean;
   questionCount?: number;
+  exactYear?: string;
+  packFormats?: ActivityFormat[];
 }
 
 function getSchemaForFormat(format: ActivityFormat) {
@@ -755,7 +764,7 @@ export async function generateClassroomActivity(
 
   const prompt = `Create a "${req.format}" interactive classroom activity.
 Subject: ${req.subject}
-Year Group: ${req.yearGroup}
+Year Group: ${yearForPrompt(req.yearGroup, req.exactYear)}
 Topic: ${req.topic}
 Differentiation Focus: ${req.differentiation}${countHint}
 Lesson Objectives:
@@ -783,6 +792,7 @@ Return strictly valid JSON matching the schema.`;
     title: String(parsed.title || `${req.topic} (${req.format})`),
     topic: req.topic,
     yearGroup: req.yearGroup,
+    exactYear: req.exactYear,
     subject: req.subject,
     objectives: req.objectives,
     format: req.format,
@@ -805,9 +815,9 @@ Return strictly valid JSON matching the schema.`;
 }
 
 export async function generateLessonPack(
-  baseReq: Omit<GenerateActivityRequest, 'format'>
+  baseReq: Omit<GenerateActivityRequest, 'format'>,
+  formats: ActivityFormat[] = ['sort', 'buzzer', 'bingo']
 ): Promise<ClassroomActivity[]> {
-  const formats: ActivityFormat[] = ['sort', 'buzzer', 'bingo'];
   return Promise.all(
     formats.map((format) =>
       generateClassroomActivity({
@@ -906,7 +916,7 @@ export async function generateActivityFromFile(
   }
 
   const targetFormats: ActivityFormat[] = req.generatePack
-    ? ['sort', 'buzzer', 'bingo']
+    ? req.packFormats && req.packFormats.length ? req.packFormats : ['sort', 'buzzer', 'bingo']
     : [req.format];
 
   const userTopicHint = req.topic?.trim()
@@ -925,7 +935,7 @@ export async function generateActivityFromFile(
           : '';
       const instructionText = `You are creating an interactive "${fmt}" classroom activity grounded directly in the teacher's uploaded file ("${req.fileName}").
 Subject: ${req.subject}
-Year Group: ${req.yearGroup}
+Year Group: ${yearForPrompt(req.yearGroup, req.exactYear)}
 Differentiation Focus: ${req.differentiation}${fileCountHint}
 ${userTopicHint}
 ${userObjectivesHint}
@@ -979,6 +989,7 @@ Use accurate facts, examples, diagrams/text, and terminology from the uploaded f
         title: String(parsed.title || `${resolvedTopic} (${fmt})`),
         topic: resolvedTopic,
         yearGroup: req.yearGroup,
+        exactYear: req.exactYear,
         subject: req.subject,
         objectives: resolvedObjectives,
         format: fmt,
@@ -1010,7 +1021,7 @@ export async function adaptActivityDifferentiation(
   targetTier: DifferentiationTier
 ): Promise<ClassroomActivity> {
   const ai = getGenAIClient();
-  const prompt = `Adapt the following classroom activity so it retains the exact same topic, format ("${activity.format}"), and lesson objectives, but is specifically tailored for "${targetTier}" within ${activity.yearGroup}.
+  const prompt = `Adapt the following classroom activity so it retains the exact same topic, format ("${activity.format}"), and lesson objectives, but is specifically tailored for "${targetTier}" within ${yearForPrompt(activity.yearGroup, activity.exactYear)}.
 - If "Visual & EAL Support": simplify sentence structures, clarify Tier 2/3 terms with friendly clues, make prompts extra concrete.
 - If "Stretch & Challenge": raise conceptual depth, introduce subtler misconceptions/distractors, and add deeper reasoning prompts.
 - If "All Learners": provide a balanced mix of accessible entry points and core curriculum challenge.
@@ -1070,7 +1081,7 @@ export async function generateMoreActivityItems(
   const prompt = `The teacher wants to add ${safeAddCount} more questions/items to this existing "${activity.format}" classroom activity.
 Topic: ${activity.topic}
 Subject: ${activity.subject}
-Year Group: ${activity.yearGroup}
+Year Group: ${yearForPrompt(activity.yearGroup, activity.exactYear)}
 Differentiation: ${activity.differentiation}
 Lesson Objectives: ${activity.objectives.join('; ')}
 

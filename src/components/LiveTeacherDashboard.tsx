@@ -304,14 +304,23 @@ export function LiveTeacherDashboard({
 
   return (
     <div className="mx-auto max-w-[1380px] px-4 sm:px-6 py-8 space-y-6">
+      {activeSession && (
+        <button
+          type="button"
+          onClick={() => onOpenActivity(activeSession.activity, activeSession.room.code)}
+          className="inline-flex items-center gap-2 text-base font-semibold text-slate-600 hover:text-slate-950 min-h-[44px]"
+        >
+          ← Back to the game
+        </button>
+      )}
       {/* Header Bar */}
       <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
           <h1 className="font-display text-2xl sm:text-3xl font-semibold text-slate-950">
-            Live Teacher Dashboard
+            Pupil progress
           </h1>
-          <p className="mt-1 text-sm text-slate-600">
-            Real-time completion status, accuracy, and team standings across active classroom sessions.
+          <p className="mt-1 text-base text-slate-600">
+            How each pupil is doing in your live games. Only you can see your rooms.
           </p>
         </div>
 
@@ -490,7 +499,7 @@ export function LiveTeacherDashboard({
                   className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 min-h-[38px] whitespace-nowrap"
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
-                  Reset Scores
+                  Play again
                 </button>
                 <button
                   type="button"
@@ -500,7 +509,7 @@ export function LiveTeacherDashboard({
                   className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-blue-700 min-h-[38px] whitespace-nowrap"
                 >
                   <ExternalLink className="h-3.5 w-3.5" />
-                  Open Board Stage
+                  Back to the game
                 </button>
                 <button
                   type="button"

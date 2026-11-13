@@ -1,6 +1,37 @@
-import { BookOpen, ChevronDown, SkipForward } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { BookOpen, ChevronDown, ChevronUp } from 'lucide-react';
 import { ACTIVITY_GUIDES } from '../data/activityGuides.ts';
 import { FORMAT_META, type ActivityFormat } from '../types.ts';
+
+function guideKey(format: ActivityFormat): string {
+  return `cs:guide-seen:${format}`;
+}
+
+function wasSeen(format: ActivityFormat): boolean {
+  try {
+    return window.localStorage.getItem(guideKey(format)) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The step-by-step guide opens in full the first time a teacher meets a game type.
+ * After that it starts folded away (one line with "How do I run this game?").
+ * Returns [skipped, hide, show].
+ */
+export function useGuideSeen(format: ActivityFormat): [boolean, () => void, () => void] {
+  const [skipped, setSkipped] = useState(() => wasSeen(format));
+  useEffect(() => {
+    setSkipped(wasSeen(format));
+    try {
+      window.localStorage.setItem(guideKey(format), '1');
+    } catch {
+      // ignore
+    }
+  }, [format]);
+  return [skipped, () => setSkipped(true), () => setSkipped(false)];
+}
 
 interface ActivityGuideCardProps {
   format: ActivityFormat;
@@ -35,10 +66,10 @@ export function ActivityGuideCard({
         <button
           type="button"
           onClick={onShow}
-          className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 hover:text-blue-800 whitespace-nowrap shrink-0 min-h-[32px]"
+          className="inline-flex items-center gap-1 text-sm font-semibold text-blue-700 hover:text-blue-800 whitespace-nowrap shrink-0 min-h-[36px]"
         >
-          <ChevronDown className="h-3.5 w-3.5" />
-          Show Full Steps
+          <ChevronDown className="h-4 w-4" />
+          {isStudentMode ? 'How do I play?' : 'How do I run this game?'}
         </button>
       </div>
     );
@@ -50,7 +81,7 @@ export function ActivityGuideCard({
         <div className="space-y-1">
           <p className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-blue-800">
             <BookOpen className="h-3.5 w-3.5" />
-            How This Activity Works · Full Steps ({isStudentMode ? 'Student Guide' : 'Teacher & Class Guide'})
+            {isStudentMode ? 'How to play' : 'How to run this game'}
           </p>
           <p className="text-sm text-slate-700">{guide.summary}</p>
         </div>
@@ -60,8 +91,8 @@ export function ActivityGuideCard({
           onClick={onSkip}
           className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 hover:bg-blue-50 hover:border-blue-400 transition-colors min-h-[38px] whitespace-nowrap shrink-0"
         >
-          <SkipForward className="h-3.5 w-3.5 text-blue-700" />
-          Skip Guide & Start
+          <ChevronUp className="h-3.5 w-3.5 text-blue-700" />
+          Hide these steps
         </button>
       </div>
 
@@ -87,7 +118,7 @@ export function ActivityGuideCard({
       {!isStudentMode && (
         <div className="border-t border-blue-200/60 pt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
           <span>
-            <strong className="text-slate-800">Student steps shown in Live Join:</strong>{' '}
+            <strong className="text-slate-800">What pupils see on their own devices:</strong>{' '}
             {guide.studentSteps.map((s, i) => `${i + 1}) ${s.title}`).join(' · ')}
           </span>
         </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Check,
@@ -8,23 +8,28 @@ import {
   Pencil,
   Play,
   Plus,
+  Printer,
   Save,
   Trash2,
 } from 'lucide-react';
 import {
   FORMAT_META,
+  yearLabel,
   type ActivityPayload,
   type ClassroomActivity,
 } from '../types.ts';
-import { ActivityGuideCard } from './ActivityGuideCard.tsx';
-import { parseJsonResponse, upsertLocalActivity } from '../utils/staticStorage.ts';
+import { ActivityGuideCard, useGuideSeen } from './ActivityGuideCard.tsx';
+import { openWorksheet } from '../utils/printWorksheet.ts';
+
+const COPY_NOTICE =
+  'This lesson was made by someone else, so your changes were saved as your own copy. Their lesson is unchanged.';
 
 interface TeacherPreviewStageProps {
   activity: ClassroomActivity;
   packActivities?: ClassroomActivity[];
   onSelectPackActivity?: (act: ClassroomActivity) => void;
   onBack: () => void;
-  onUpdated: (updated: ClassroomActivity) => void;
+  onUpdated: (updated: ClassroomActivity, replacesId?: string) => void;
   onLaunch: (readyActivity: ClassroomActivity) => void;
 }
 
@@ -70,7 +75,8 @@ export function TeacherPreviewStage({
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const [guideSkipped, setGuideSkipped] = useState(false);
+  const [guideSkipped, skipGuide, showGuide] = useGuideSeen(activity.format);
+  const statusAfterSwitch = useRef<string | null>(null);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [addingManual, setAddingManual] = useState(false);
 
@@ -88,7 +94,8 @@ export function TeacherPreviewStage({
     setDirty(false);
     setEditingItemId(null);
     setAddingManual(false);
-    setStatusMsg(null);
+    setStatusMsg(statusAfterSwitch.current);
+    statusAfterSwitch.current = null;
     setErrorMsg(null);
   }, [activity]);
 
@@ -124,33 +131,16 @@ export function TeacherPreviewStage({
           payload: target.payload,
         }),
       });
-      const parsed = await parseJsonResponse<{ activity?: ClassroomActivity; error?: string }>(res);
-      if (parsed.isJson) {
-        if (!parsed.ok || !parsed.data.activity) {
-          throw new Error(parsed.data.error || 'Could not save changes.');
-        }
-        setDraft(parsed.data.activity);
-        setDirty(false);
-        upsertLocalActivity(parsed.data.activity);
-        onUpdated(parsed.data.activity);
-        setStatusMsg('Changes saved to school library.');
-        return parsed.data.activity;
-      }
-      upsertLocalActivity(target);
-      setDraft(target);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not save changes.');
+      setDraft(data.activity);
       setDirty(false);
-      onUpdated(target);
-      setStatusMsg('Changes saved in browser.');
-      return target;
+      const msg = data.copied ? COPY_NOTICE : 'Changes saved.';
+      statusAfterSwitch.current = msg;
+      setStatusMsg(msg);
+      onUpdated(data.activity, data.copied ? data.originalId : undefined);
+      return data.activity as ClassroomActivity;
     } catch (err) {
-      if (err instanceof TypeError) {
-        upsertLocalActivity(target);
-        setDraft(target);
-        setDirty(false);
-        onUpdated(target);
-        setStatusMsg('Changes saved in browser.');
-        return target;
-      }
       setErrorMsg(err instanceof Error ? err.message : 'Unable to save activity.');
       return null;
     } finally {
@@ -186,18 +176,16 @@ export function TeacherPreviewStage({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ count }),
       });
-      const parsed = await parseJsonResponse<{ activity?: ClassroomActivity; error?: string }>(res);
-      if (!parsed.isJson) {
-        throw new Error('Automatic question generation requires the live server. You can add or edit questions manually right below.');
-      }
-      if (!parsed.ok || !parsed.data.activity) {
-        throw new Error(parsed.data.error || 'Could not generate more questions.');
-      }
-      setDraft(parsed.data.activity);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not generate more questions.');
+      setDraft(data.activity);
       setDirty(false);
-      upsertLocalActivity(parsed.data.activity);
-      onUpdated(parsed.data.activity);
-      setStatusMsg('Added fresh curriculum items! Review them below before launching.');
+      const msg = data.copied
+        ? `${COPY_NOTICE} New questions were added to your copy. Check them below.`
+        : 'New questions added. Check them below before you play.';
+      statusAfterSwitch.current = msg;
+      setStatusMsg(msg);
+      onUpdated(data.activity, data.copied ? data.originalId : undefined);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Unable to add more items.');
     } finally {
@@ -362,14 +350,34 @@ export function TeacherPreviewStage({
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-4">
         <button
           type="button"
-          onClick={onBack}
-          className="inline-flex items-center gap-2 text-sm font-semibold text-slate-600 hover:text-slate-950 transition-colors min-h-[40px]"
+          disabled={saving}
+          onClick={async () => {
+            // Never lose a teacher's edits: save them before leaving.
+            if (dirty) {
+              const saved = await persistChanges(draft);
+              if (!saved) return;
+            }
+            onBack();
+          }}
+          className="inline-flex items-center gap-2 text-base font-semibold text-slate-600 hover:text-slate-950 transition-colors min-h-[44px]"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back
+          {dirty ? 'Save and go back' : 'Back'}
         </button>
 
         <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => {
+              if (!openWorksheet(draft)) {
+                setErrorMsg('Your browser blocked the worksheet window. Allow pop-ups for this site and try again.');
+              }
+            }}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 min-h-[44px] whitespace-nowrap"
+          >
+            <Printer className="h-4 w-4" />
+            Print worksheet
+          </button>
           {dirty && (
             <button
               type="button"
@@ -378,17 +386,17 @@ export function TeacherPreviewStage({
               className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50 min-h-[42px] whitespace-nowrap"
             >
               <Save className="h-3.5 w-3.5" />
-              {saving ? 'Saving…' : 'Save Edits'}
+              {saving ? 'Saving…' : 'Save changes'}
             </button>
           )}
           <button
             type="button"
             disabled={saving}
             onClick={handleLaunchNow}
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-60 transition-colors min-h-[44px] whitespace-nowrap"
+            className="inline-flex items-center gap-2 rounded-xl bg-blue-700 px-6 py-3 text-base font-semibold text-white hover:bg-blue-800 disabled:opacity-60 transition-colors min-h-[48px] whitespace-nowrap"
           >
-            <Play className="h-4 w-4" />
-            {saving ? 'Saving & Launching…' : 'Launch Activity With Class →'}
+            <Play className="h-5 w-5" />
+            {saving ? 'Saving…' : 'Play with the class →'}
           </button>
         </div>
       </div>
@@ -398,10 +406,10 @@ export function TeacherPreviewStage({
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3">
           <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 mr-2">
             <Layers className="h-3.5 w-3.5 text-blue-700" />
-            Previewing 3-Part Lesson Pack:
+            Your lesson has 3 games:
           </span>
           {packActivities.map((act, idx) => {
-            const stageLabel = idx === 0 ? '1. Starter' : idx === 1 ? '2. Main' : '3. Plenary';
+            const stageLabel = idx === 0 ? '1. Start' : idx === 1 ? '2. Main' : '3. Finish';
             const isCurrent = act.id === draft.id;
             return (
               <button
@@ -426,10 +434,10 @@ export function TeacherPreviewStage({
         <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 border-b border-slate-200 pb-5">
           <div className="space-y-2 flex-1">
             <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">
-              Teacher Preview & Question Editor
+              Check the questions before you play
             </p>
             <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500">
-              <span className="font-semibold text-slate-800">{draft.yearGroup}</span>
+              <span className="font-semibold text-slate-800">{yearLabel(draft)}</span>
               <span aria-hidden="true">·</span>
               <span>{draft.subject}</span>
               <span aria-hidden="true">·</span>
@@ -453,7 +461,7 @@ export function TeacherPreviewStage({
 
           <div className="shrink-0 space-y-1.5">
             <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Estimated Mins
+              Minutes
             </label>
             <input
               type="number"
@@ -477,23 +485,23 @@ export function TeacherPreviewStage({
           format={draft.format}
           isStudentMode={false}
           skipped={guideSkipped}
-          onSkip={() => setGuideSkipped(true)}
-          onShow={() => setGuideSkipped(false)}
+          onSkip={skipGuide}
+          onShow={showGuide}
         />
 
         {/* Toolbar: AI Expand + Manual Add */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
           <div className="space-y-0.5">
             <h2 className="font-display text-base font-semibold text-slate-950">
-              Review, Edit, Add, or Delete Questions & Content
+              Change, add or remove questions
             </h2>
             <p className="text-xs text-slate-600">
-              Remove anything you do not like, tweak wording, or add extra questions before students see this activity.
+              Pupils won't see anything until you press "Play with the class".
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <span className="text-xs font-semibold text-slate-600 mr-0.5">Add questions:</span>
+            <span className="text-xs font-semibold text-slate-600 mr-0.5">Make more questions:</span>
             {[2, 3, 5].map((cnt) => (
               <button
                 key={cnt}
@@ -516,7 +524,7 @@ export function TeacherPreviewStage({
               className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-blue-700 transition-colors min-h-[38px] whitespace-nowrap"
             >
               <Plus className="h-3.5 w-3.5" />
-              {addingManual ? 'Close Form' : 'Add Item Manually'}
+              {addingManual ? 'Close Form' : 'Write my own'}
             </button>
           </div>
         </div>
@@ -827,7 +835,7 @@ export function TeacherPreviewStage({
                 type="submit"
                 className="rounded-lg bg-blue-700 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-800 min-h-[38px]"
               >
-                Add to Activity
+                Add it
               </button>
             </div>
           </form>

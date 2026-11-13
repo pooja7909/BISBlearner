@@ -15,7 +15,11 @@ import {
   type RoomParticipant,
   type SubjectArea,
   type YearGroup,
+  EXACT_YEARS,
+  bandForYear,
+  packFormatsFor,
 } from './src/types.ts';
+import type { Request } from 'express';
 import {
   adaptActivityDifferentiation,
   generateActivityFromFile,
@@ -25,6 +29,51 @@ import {
 } from './server/geminiGenerator.ts';
 
 const PORT = Number(process.env.PORT || 3000);
+
+/*
+ * Light-touch ownership (no passwords to remember):
+ * every browser sends a random "x-owner-key" header (see src/utils/deviceKey.ts).
+ * - Lessons remember which browser made them. Only that browser can delete them;
+ *   editing someone else's lesson saves your own copy instead of changing theirs.
+ * - Live rooms remember which browser started them. Only that browser can pause,
+ *   reset or close the room, and the teacher's room list only shows their own rooms.
+ * ADMIN_KEY (optional env var): an IT admin can open the site once with ?admin=THEKEY
+ * to delete any lesson and edit the home page tagline.
+ * For full accounts, replace this with school Google sign-in.
+ */
+const ADMIN_KEY = (process.env.ADMIN_KEY || '').trim();
+
+function ownerOf(req: Request): string {
+  const key = String(req.headers['x-owner-key'] || '').trim();
+  return /^[A-Za-z0-9-]{16,80}$/.test(key) ? key : '';
+}
+
+function isAdmin(req: Request): boolean {
+  return ADMIN_KEY.length >= 8 && String(req.headers['x-admin-key'] || '') === ADMIN_KEY;
+}
+
+function canManage(req: Request, ownerKey?: string): boolean {
+  if (isAdmin(req)) return true;
+  const me = ownerOf(req);
+  return Boolean(me && ownerKey && me === ownerKey);
+}
+
+/** What other browsers may see: never the owner key, plus a "mine" flag. */
+function pub(req: Request, activity: ClassroomActivity): ClassroomActivity {
+  const { ownerKey, ...rest } = activity;
+  return { ...rest, mine: canManage(req, ownerKey) };
+}
+
+/** Exact year must be one we know ("Year 4"); returns its label and band. */
+function readExactYear(raw: unknown): { exactYear?: string; band?: YearGroup } {
+  const label = typeof raw === 'string' ? raw.trim() : '';
+  if (!EXACT_YEARS.some((y) => y.label === label)) return {};
+  return { exactYear: label, band: bandForYear(label) };
+}
+
+const roomOwners = new Map<string, string>();
+const JOIN_TEAMS = ['Oak', 'Maple', 'Willow', 'Rowan'];
+const JOIN_CHARACTERS = ['fox', 'owl', 'bot', 'astro', 'bear', 'cat', 'dino', 'comet'];
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const ACTIVITIES_FILE = path.join(DATA_DIR, 'activities.json');
 const SUBJECTS_FILE = path.join(DATA_DIR, 'subjects.json');
@@ -132,27 +181,33 @@ function generateRoomCode(): string {
 
 function extractGeminiError(err: unknown): { status: number; message: string } {
   const msg = err instanceof Error ? err.message : String(err);
+  console.error('[generation error]', msg);
+  if (msg.startsWith('Could not read text from')) {
+    return { status: 400, message: `${msg} Or type your topic instead.` };
+  }
   if (msg.includes('GEMINI_API_KEY')) {
     return {
       status: 500,
-      message: 'Gemini API key is not configured. Check Settings > Secrets.',
+      message:
+        'Lesson building is not switched on yet. Please tell your IT contact (the AI key is missing).',
     };
   }
   if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
     return {
       status: 429,
-      message: 'AI generation quota temporarily reached. Please wait a moment and try again.',
+      message: 'Lots of lessons are being made right now. Please wait one minute and press the button again.',
     };
   }
   if (msg.includes('403') || msg.includes('400') || msg.includes('API_KEY_INVALID')) {
     return {
       status: 400,
-      message: 'Unable to validate the Gemini API key. Check Settings > Secrets.',
+      message: 'Lesson building is not working right now. Please tell your IT contact (the AI key was rejected).',
     };
   }
   return {
     status: 500,
-    message: msg || 'Failed to generate activity.',
+    message:
+      'Sorry, that lesson could not be made this time. Please press the button again. If it keeps happening, try shorter objectives.',
   };
 }
 
@@ -166,11 +221,15 @@ async function startServer() {
     res.json({ ok: true, activityCount: activitiesCache.length, subjectCount: subjectsCache.length });
   });
 
-  app.get('/api/settings', (_req, res) => {
-    res.json(settingsCache);
+  app.get('/api/settings', (req, res) => {
+    res.json({ ...settingsCache, isAdmin: isAdmin(req) });
   });
 
   app.put('/api/settings', async (req, res) => {
+    if (!isAdmin(req)) {
+      res.status(403).json({ error: 'Only the school admin can change the home page text.' });
+      return;
+    }
     const rawHeader = String((req.body as { heroHeader?: string })?.heroHeader || '').trim();
     if (!rawHeader) {
       res.status(400).json({ error: 'Please enter header text or reset to default.' });
@@ -203,8 +262,8 @@ async function startServer() {
     res.json({ subject: saved, subjects: subjectsCache });
   });
 
-  app.get('/api/activities', (_req, res) => {
-    res.json({ activities: activitiesCache });
+  app.get('/api/activities', (req, res) => {
+    res.json({ activities: activitiesCache.map((a) => pub(req, a)) });
   });
 
   app.post('/api/activities/generate', async (req, res) => {
@@ -218,6 +277,7 @@ async function startServer() {
         differentiation,
         generatePack,
         questionCount,
+        exactYear: rawExactYear,
       } = req.body as {
         topic?: string;
         yearGroup?: YearGroup;
@@ -227,7 +287,10 @@ async function startServer() {
         differentiation?: DifferentiationTier;
         generatePack?: boolean;
         questionCount?: number;
+        exactYear?: string;
       };
+      const { exactYear, band } = readExactYear(rawExactYear);
+      const owner = ownerOf(req);
 
       if (!topic || !topic.trim()) {
         res.status(400).json({ error: 'Please enter a lesson topic.' });
@@ -242,7 +305,7 @@ async function startServer() {
         return;
       }
 
-      const safeYearGroup = (yearGroup || 'Year 5-6 (Upper KS2)') as YearGroup;
+      const safeYearGroup = (band || yearGroup || 'Year 5-6 (Upper KS2)') as YearGroup;
       const safeSubject = await ensureSubjectSaved(subject || 'Science');
       const safeDiff = (differentiation || 'All Learners') as DifferentiationTier;
       const safeCount =
@@ -251,24 +314,31 @@ async function startServer() {
           : undefined;
 
       if (generatePack) {
-        const pack = await generateLessonPack({
-          topic: topic.trim(),
-          yearGroup: safeYearGroup,
-          subject: safeSubject,
-          objectives: cleanObjectives,
-          differentiation: safeDiff,
-          questionCount: safeCount,
-        });
+        const pack = (
+          await generateLessonPack(
+            {
+              topic: topic.trim(),
+              yearGroup: safeYearGroup,
+              exactYear,
+              subject: safeSubject,
+              objectives: cleanObjectives,
+              differentiation: safeDiff,
+              questionCount: safeCount,
+            },
+            packFormatsFor(safeYearGroup)
+          )
+        ).map((a) => ({ ...a, ownerKey: owner || undefined }));
         activitiesCache = [...pack, ...activitiesCache];
         await saveActivities();
-        res.json({ activities: pack, primary: pack[0] });
+        res.json({ activities: pack.map((a) => pub(req, a)), primary: pub(req, pack[0]) });
         return;
       }
 
       const safeFormat = (format || 'sort') as ActivityFormat;
-      const created = await generateClassroomActivity({
+      const generated = await generateClassroomActivity({
         topic: topic.trim(),
         yearGroup: safeYearGroup,
+        exactYear,
         subject: safeSubject,
         objectives: cleanObjectives,
         format: safeFormat,
@@ -276,9 +346,10 @@ async function startServer() {
         questionCount: safeCount,
       });
 
+      const created = { ...generated, ownerKey: owner || undefined };
       activitiesCache = [created, ...activitiesCache];
       await saveActivities();
-      res.json({ activity: created });
+      res.json({ activity: pub(req, created) });
     } catch (err) {
       const { status, message } = extractGeminiError(err);
       res.status(status).json({ error: message });
@@ -299,7 +370,9 @@ async function startServer() {
         differentiation,
         generatePack,
         questionCount,
+        exactYear: rawExactYear,
       } = req.body as {
+        exactYear?: string;
         fileName?: string;
         mimeType?: string;
         base64Data?: string;
@@ -328,12 +401,16 @@ async function startServer() {
           ? Math.round(questionCount)
           : undefined;
 
+      const { exactYear, band } = readExactYear(rawExactYear);
+      const fileBand = (band || yearGroup || 'Year 7-9 (KS3)') as YearGroup;
       const result = await generateActivityFromFile({
+        exactYear,
+        packFormats: packFormatsFor(fileBand),
         fileName,
         mimeType: mimeType || 'application/octet-stream',
         base64Data,
         topic: topic?.trim(),
-        yearGroup: (yearGroup || 'Year 7-9 (KS3)') as YearGroup,
+        yearGroup: fileBand,
         subject: safeSubject,
         objectives: cleanObjectives,
         format: (format || 'quiz') as ActivityFormat,
@@ -342,9 +419,12 @@ async function startServer() {
         questionCount: safeCount,
       });
 
-      activitiesCache = [...result.activities, ...activitiesCache];
+      const owner = ownerOf(req) || undefined;
+      const owned = result.activities.map((a) => ({ ...a, ownerKey: owner }));
+      activitiesCache = [...owned, ...activitiesCache];
       await saveActivities();
-      res.json({ activities: result.activities, primary: result.primary });
+      const primary = owned.find((a) => a.id === result.primary.id) ?? owned[0];
+      res.json({ activities: owned.map((a) => pub(req, a)), primary: pub(req, primary) });
     } catch (err) {
       const { status, message } = extractGeminiError(err);
       res.status(status).json({ error: message });
@@ -378,9 +458,25 @@ async function startServer() {
           : existing.payload,
     };
 
+    if (!canManage(req, existing.ownerKey)) {
+      // Someone else's lesson (or a starter): keep theirs untouched and save a copy for this teacher.
+      const copy: ClassroomActivity = {
+        ...updated,
+        id: `act-${crypto.randomUUID().slice(0, 8)}`,
+        title: updated.title.endsWith('(my copy)') ? updated.title : `${updated.title} (my copy)`,
+        isStarter: false,
+        createdAt: new Date().toISOString(),
+        ownerKey: ownerOf(req) || undefined,
+      };
+      activitiesCache = [copy, ...activitiesCache];
+      await saveActivities();
+      res.json({ activity: pub(req, copy), copied: true, originalId: existing.id });
+      return;
+    }
+
     activitiesCache[idx] = updated;
     await saveActivities();
-    res.json({ activity: updated });
+    res.json({ activity: pub(req, updated) });
   });
 
   app.post('/api/activities/:id/more-items', async (req, res) => {
@@ -398,9 +494,23 @@ async function startServer() {
         existing,
         typeof count === 'number' ? count : 3
       );
+      if (!canManage(req, existing.ownerKey)) {
+        const copy: ClassroomActivity = {
+          ...expanded,
+          id: `act-${crypto.randomUUID().slice(0, 8)}`,
+          title: expanded.title.endsWith('(my copy)') ? expanded.title : `${expanded.title} (my copy)`,
+          isStarter: false,
+          createdAt: new Date().toISOString(),
+          ownerKey: ownerOf(req) || undefined,
+        };
+        activitiesCache = [copy, ...activitiesCache];
+        await saveActivities();
+        res.json({ activity: pub(req, copy), copied: true, originalId: existing.id });
+        return;
+      }
       activitiesCache[idx] = expanded;
       await saveActivities();
-      res.json({ activity: expanded });
+      res.json({ activity: pub(req, expanded) });
     } catch (err) {
       const { status, message } = extractGeminiError(err);
       res.status(status).json({ error: message });
@@ -420,9 +530,10 @@ async function startServer() {
         existing,
         targetTier || 'Visual & EAL Support'
       );
-      activitiesCache = [adapted, ...activitiesCache];
+      const ownedAdapted = { ...adapted, ownerKey: ownerOf(req) || undefined };
+      activitiesCache = [ownedAdapted, ...activitiesCache];
       await saveActivities();
-      res.json({ activity: adapted });
+      res.json({ activity: pub(req, ownedAdapted) });
     } catch (err) {
       const { status, message } = extractGeminiError(err);
       res.status(status).json({ error: message });
@@ -431,22 +542,28 @@ async function startServer() {
 
   app.delete('/api/activities/:id', async (req, res) => {
     const { id } = req.params;
-    const before = activitiesCache.length;
-    activitiesCache = activitiesCache.filter((a) => a.id !== id);
-    if (activitiesCache.length === before) {
-      res.status(404).json({ error: 'Activity not found.' });
+    const target = activitiesCache.find((a) => a.id === id);
+    if (!target) {
+      res.status(404).json({ error: 'That lesson has already been deleted.' });
       return;
     }
+    if (!canManage(req, target.ownerKey)) {
+      res.status(403).json({ error: 'You can only delete lessons you made.' });
+      return;
+    }
+    activitiesCache = activitiesCache.filter((a) => a.id !== id);
     await saveActivities();
     res.json({ ok: true });
   });
 
   // Live Classroom Room Endpoints
-  app.get('/api/rooms', (_req, res) => {
+  app.get('/api/rooms', (req, res) => {
+    // Teachers only see the rooms they started on this device.
     const sessions = Array.from(liveRooms.values())
+      .filter((room) => canManage(req, roomOwners.get(room.code)))
       .map((room) => {
         const activity = activitiesCache.find((a) => a.id === room.activityId);
-        return activity ? { room, activity } : null;
+        return activity ? { room, activity: pub(req, activity) } : null;
       })
       .filter(Boolean)
       .sort((a, b) =>
@@ -457,6 +574,11 @@ async function startServer() {
 
   app.delete('/api/rooms/:code', (req, res) => {
     const code = String(req.params.code || '').toUpperCase().trim();
+    if (liveRooms.has(code) && !canManage(req, roomOwners.get(code))) {
+      res.status(403).json({ error: 'Only the teacher who started this room can close it.' });
+      return;
+    }
+    roomOwners.delete(code);
     if (!liveRooms.delete(code)) {
       res.status(404).json({ error: 'Room not found.' });
       return;
@@ -474,8 +596,14 @@ async function startServer() {
       res.status(404).json({ error: 'Activity not found.' });
       return;
     }
+    const owner = ownerOf(req);
+    if (!owner) {
+      res.status(400).json({ error: 'Please reload the page and try again.' });
+      return;
+    }
 
     const code = generateRoomCode();
+    roomOwners.set(code, owner);
     const initialWords =
       activity.payload.type === 'wordcloud'
         ? activity.payload.seedWords.map((w, idx) => ({
@@ -500,7 +628,7 @@ async function startServer() {
       drawingSubmissions: [],
     };
     liveRooms.set(code, room);
-    res.json({ room, activity });
+    res.json({ room, activity: pub(req, activity) });
   });
 
   app.get('/api/rooms/:code', (req, res) => {
@@ -517,7 +645,7 @@ async function startServer() {
       res.status(404).json({ error: 'The activity for this room is no longer available.' });
       return;
     }
-    res.json({ room, activity });
+    res.json({ room, activity: pub(req, activity) });
   });
 
   app.post('/api/rooms/:code/join', (req, res) => {
@@ -543,11 +671,20 @@ async function startServer() {
       return;
     }
 
+    // Teams are shared out automatically so pupils don't have to choose.
+    const counts = JOIN_TEAMS.map((t) => room.participants.filter((p) => p.team === t).length);
+    const autoTeam = JOIN_TEAMS[counts.indexOf(Math.min(...counts))];
+    const chosenTeam = typeof team === 'string' && JOIN_TEAMS.includes(team) ? team : autoTeam;
+    const chosenCharacter =
+      typeof character === 'string' && JOIN_CHARACTERS.includes(character)
+        ? character
+        : JOIN_CHARACTERS[Math.floor(Math.random() * JOIN_CHARACTERS.length)];
+
     const participant: RoomParticipant = {
       id: `stu-${crypto.randomUUID().slice(0, 8)}`,
       name: cleanName,
-      team: String(team || 'Oak').trim(),
-      character: String(character || 'fox').trim().slice(0, 20),
+      team: chosenTeam,
+      character: chosenCharacter,
       score: 0,
       total: 0,
       completed: false,
@@ -555,7 +692,13 @@ async function startServer() {
       updatedAt: new Date().toISOString(),
     };
     room.participants.push(participant);
-    res.json({ participantId: participant.id, room, activity });
+    res.json({
+      participantId: participant.id,
+      team: participant.team,
+      character: participant.character,
+      room,
+      activity: pub(req, activity),
+    });
   });
 
   app.post('/api/rooms/:code/progress', (req, res) => {
@@ -653,6 +796,10 @@ async function startServer() {
     const room = liveRooms.get(code);
     if (!room) {
       res.status(404).json({ error: 'Room not found.' });
+      return;
+    }
+    if (!canManage(req, roomOwners.get(code))) {
+      res.status(403).json({ error: 'Only the teacher who started this room can control it.' });
       return;
     }
 

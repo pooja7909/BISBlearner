@@ -14,7 +14,7 @@ export interface ActivityFormatGuide {
 export const ACTIVITY_GUIDES: Record<ActivityFormat, ActivityFormatGuide> = {
   sort: {
     summary:
-      'Learners classify concept cards into the right category buckets with instant misconception coaching.',
+      'Pupils put each card into the right group, then you talk about the tricky ones.',
     teacherSteps: [
       {
         title: 'Preview & Set the Timer',
@@ -50,7 +50,7 @@ export const ACTIVITY_GUIDES: Record<ActivityFormat, ActivityFormatGuide> = {
   },
   sequence: {
     summary:
-      'Learners arrange steps, events, or processes into the exact logical or chronological order.',
+      'Pupils put the steps in the right order, then check them together.',
     teacherSteps: [
       {
         title: 'Display Shuffled Cards',
@@ -86,7 +86,7 @@ export const ACTIVITY_GUIDES: Record<ActivityFormat, ActivityFormatGuide> = {
   },
   match: {
     summary:
-      'Learners connect matching terms, definitions, formulas, or translations across two columns.',
+      'Pupils join each word to its meaning or partner.',
     teacherSteps: [
       {
         title: 'Introduce Both Columns',
@@ -122,7 +122,7 @@ export const ACTIVITY_GUIDES: Record<ActivityFormat, ActivityFormatGuide> = {
   },
   quiz: {
     summary:
-      'Interactive multiple-choice concept check with 50/50 hints, explanations, and class debate prompts.',
+      'Read each question, let pupils choose an answer, then reveal it and discuss.',
     teacherSteps: [
       {
         title: 'Run One Question at a Time',
@@ -158,7 +158,7 @@ export const ACTIVITY_GUIDES: Record<ActivityFormat, ActivityFormatGuide> = {
   },
   cloze: {
     summary:
-      'Learners complete a curriculum passage by selecting accurate vocabulary from a word bank.',
+      'Pupils pick words from the box to fill each gap in the text.',
     teacherSteps: [
       {
         title: 'Read the Full Passage Aloud',
@@ -194,7 +194,7 @@ export const ACTIVITY_GUIDES: Record<ActivityFormat, ActivityFormatGuide> = {
   },
   bingo: {
     summary:
-      'Whole-class 3×3 concept Bingo where teachers draw spoken clues and learners mark matching terms.',
+      'You read out a clue; pupils find and mark the answer on their card.',
     teacherSteps: [
       {
         title: 'Launch a Live Room or Play on Board',
@@ -230,7 +230,7 @@ export const ACTIVITY_GUIDES: Record<ActivityFormat, ActivityFormatGuide> = {
   },
   draw: {
     summary:
-      'Interactive sketch canvas where learners draw diagrams, stamp vocabulary labels, and share to the board.',
+      'Pupils draw a diagram and add labels, then share the best ones on the board.',
     teacherSteps: [
       {
         title: 'Brief the Checklist',
@@ -266,7 +266,7 @@ export const ACTIVITY_GUIDES: Record<ActivityFormat, ActivityFormatGuide> = {
   },
   wordcloud: {
     summary:
-      'Real-time brainstorm where student words scale dynamically by frequency and spark follow-up discussion.',
+      'Pupils send in words on their devices; words sent more often grow bigger.',
     teacherSteps: [
       {
         title: 'Review Starter Words',
@@ -302,7 +302,7 @@ export const ACTIVITY_GUIDES: Record<ActivityFormat, ActivityFormatGuide> = {
   },
   buzzer: {
     summary:
-      'Jeopardy-style 100–300 point category grid designed for fast-paced team duels and timed challenges.',
+      'Teams take turns to pick a topic and a points value, then answer for points.',
     teacherSteps: [
       {
         title: 'Pick Question Timer & Teams',
@@ -338,7 +338,7 @@ export const ACTIVITY_GUIDES: Record<ActivityFormat, ActivityFormatGuide> = {
   },
   escape: {
     summary:
-      'Sequential 4-lock curriculum puzzle where every solved riddle reveals one digit of the vault code.',
+      'Pupils solve 4 puzzles in a row; each answer gives one part of a secret code.',
     teacherSteps: [
       {
         title: 'Set the Scene',
